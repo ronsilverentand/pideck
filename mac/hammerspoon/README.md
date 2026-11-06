@@ -38,11 +38,36 @@ Every route accepts GET or POST and returns JSON.
 | `/app/Visual%20Studio%20Code` · `/quit/Slack` | Launch or focus an app, or quit it |
 | `/window/left` · `right` · `top` · `bottom` · `max` · `center` | Move the focused window |
 | `/window/top-left` (and the other quarters) · `left-third` · `center-third` · `right-third` | Quarters and thirds |
-| `/window/frame/0/25/1200/800` | Exact x, y, width, height in points |
+| `POST /window/set` + JSON body | Exact position and size, see below |
+| `/window/frame/0/0/1200/800` | Same in the URL: x, y, width, height in points |
 | `/window/next-screen` · `/window/fullscreen` | Move to the next display, toggle full screen |
 | `/media/play` · `/media/next` · `/media/previous` | Media keys |
 | `/darkmode` · `/lock` · `/displaysleep` | Toggle dark mode, lock screen, display off |
 | `/shortcut/Name%20of%20Shortcut` | Run a macOS Shortcuts shortcut |
+
+### Move and resize a window: `POST /window/set`
+
+Send a JSON body (content type `application/json`). Every field is optional; a missing field keeps the window's current value.
+
+| Field | Meaning |
+| --- | --- |
+| `x`, `y` | Position of the top-left corner, relative to the screen's usable area (below the menu bar, beside the Dock) |
+| `w`, `h` | Width and height |
+| `unit` | `true`: x/y/w/h are fractions 0–1 of the usable area. Default: points |
+| `screen` | `1`, `2`, … (displays left to right), `"main"`, `"next"`, or part of the display's name (`"DELL"`, `"Built-in"`). Default: the window's current screen |
+| `app` | Move this app's main window instead of the focused window, e.g. `"Slack"` |
+
+```json
+{"x": 0, "y": 0, "w": 1200, "h": 800}
+{"x": 0.25, "y": 0, "w": 0.5, "h": 1, "unit": true}
+{"screen": "DELL", "x": 0, "y": 0, "w": 0.5, "h": 1, "unit": true}
+{"app": "Slack", "screen": 2, "x": 0.66, "y": 0, "w": 0.34, "h": 1, "unit": true}
+{"w": 1000}
+```
+
+The response returns the frame the window actually got (apps can enforce a minimum size): `{"ok":true,"screen":"…","frame":{"x":…,"y":…,"w":…,"h":…}}`.
+
+In Companion, the body field can use variables, so the sizing lives in Companion: `{"x": $(custom:win_x), "y": $(custom:win_y), "w": $(custom:win_w), "h": $(custom:win_h)}`.
 
 Brightness only controls the built-in display. External monitors would need BetterDisplay or Lunar as an extra route.
 

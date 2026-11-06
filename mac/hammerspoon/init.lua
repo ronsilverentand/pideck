@@ -90,17 +90,105 @@ local layouts = {
   max         = { 0,   0,   1,   1 },
 }
 
-local function windowAction(arg, rest)
+hs.window.animationDuration = 0 -- move instantly, no slide animation
+
+-- Screens sorted left to right (then top to bottom), so "screen": 1 is the leftmost display
+local function screensLeftToRight()
+  local list = hs.screen.allScreens()
+  table.sort(list, function(s1, s2)
+    local f1, f2 = s1:fullFrame(), s2:fullFrame()
+    if f1.x ~= f2.x then return f1.x < f2.x end
+    return f1.y < f2.y
+  end)
+  return list
+end
+
+-- spec: nil (window's current screen), number (1-based, left to right), "main", "next",
+-- or part of the screen's name (e.g. "Built-in", "DELL")
+local function pickScreen(spec, win)
+  if spec == nil or spec == "" or spec == "current" then return win:screen() end
+  if spec == "main" then return hs.screen.mainScreen() end
+  if spec == "next" then return win:screen():next() end
+  local list = screensLeftToRight()
+  local n = tonumber(spec)
+  if n then return list[math.floor(n)] end
+  for _, s in ipairs(list) do
+    if (s:name() or ""):lower():find(tostring(spec):lower(), 1, true) then return s end
+  end
+  return nil
+end
+
+-- Place a window on a screen. x/y are relative to the screen's usable area
+-- (below the menu bar, beside the Dock). With unit = true, x/y/w/h are fractions 0-1
+-- of that area; otherwise they are points. Missing values keep the window's current value.
+local function placeWindow(win, spec)
+  local screen = pickScreen(spec.screen, win)
+  if not screen then return json({ error = "screen not found: " .. tostring(spec.screen) }, 404) end
+  local area = screen:frame()
+  local cur = win:frame()
+  local onSame = win:screen():id() == screen:id()
+  -- current position relative to the target area (only meaningful on the same screen)
+  local rel = {
+    x = onSame and (cur.x - area.x) or 0,
+    y = onSame and (cur.y - area.y) or 0,
+    w = cur.w,
+    h = cur.h,
+  }
+  local unit = spec.unit == true or spec.unit == "true" or spec.unit == 1
+  local function val(key, scale)
+    local v = tonumber(spec[key])
+    if v == nil then return rel[key] end
+    return unit and v * scale or v
+  end
+  local f = {
+    x = area.x + val("x", area.w),
+    y = area.y + val("y", area.h),
+    w = val("w", area.w),
+    h = val("h", area.h),
+  }
+  win:setFrame(f)
+  local got = win:frame()
+  return json({
+    ok = true,
+    screen = screen:name(),
+    frame = { x = got.x - area.x, y = got.y - area.y, w = got.w, h = got.h },
+  })
+end
+
+local function targetWindow(appName)
+  if appName and appName ~= "" then
+    local app = hs.application.get(appName) or hs.application.find(appName)
+    if not app then return nil, "app not running: " .. appName end
+    local win = app:mainWindow() or app:focusedWindow()
+    if not win then return nil, "app has no window: " .. appName end
+    return win
+  end
+  local win = hs.window.focusedWindow()
+  if not win then return nil, "no focused window" end
+  return win
+end
+
+local function windowAction(arg, rest, body)
+  if arg == "set" then -- POST /window/set with a JSON body
+    local ok, spec = pcall(hs.json.decode, body or "")
+    if not ok or type(spec) ~= "table" then
+      return json({ error = 'POST a JSON body, e.g. {"x":0,"y":0,"w":1200,"h":800}' }, 400)
+    end
+    local win, err = targetWindow(spec.app)
+    if not win then return json({ error = err }, 409) end
+    return placeWindow(win, spec)
+  end
+
   local win = hs.window.focusedWindow()
   if not win then return json({ error = "no focused window" }, 409) end
   if layouts[arg] then
     win:moveToUnit(layouts[arg])
   elseif arg == "center" then
     win:centerOnScreen()
-  elseif arg == "frame" then -- /window/frame/<x>/<y>/<w>/<h> in points
+  elseif arg == "frame" then -- /window/frame/<x>/<y>/<w>/<h> in points, relative to the usable area
     local x, y, w, h = rest:match("^(%-?%d+)/(%-?%d+)/(%d+)/(%d+)$")
     if not x then return json({ error = "use /window/frame/x/y/w/h" }, 400) end
-    win:setFrame({ x = tonumber(x), y = tonumber(y), w = tonumber(w), h = tonumber(h) })
+    return placeWindow(win, { x = x, y = y, w = w, h = h })
   elseif arg == "next-screen" then
     win:moveToScreen(win:screen():next())
   elseif arg == "fullscreen" then
@@ -111,7 +199,7 @@ local function windowAction(arg, rest)
   return json({ ok = true })
 end
 
-local function handle(path)
+local function handle(path, body)
   -- split "/a/b/rest..." into a, b, rest
   local a, b, rest = path:match("^/([^/]+)/?([^/]*)/?(.*)$")
   a = a and urldecode(a) or ""
@@ -146,7 +234,7 @@ local function handle(path)
     if app then app:kill() end
 
   elseif a == "window" then
-    return windowAction(b, rest)
+    return windowAction(b, rest, body)
 
   elseif a == "media" then
     local keys = { play = "PLAY", next = "NEXT", previous = "PREVIOUS" }
@@ -189,7 +277,7 @@ pideckServer:setPort(cfg.port or 8765)
 pideckServer:setCallback(function(method, path, headers, body)
   if not authorized(headers) then return json({ error = "unauthorized" }, 401) end
   path = path:gsub("%?.*$", "")
-  local ok, resBody, code, resHeaders = pcall(handle, path)
+  local ok, resBody, code, resHeaders = pcall(handle, path, body)
   if not ok then
     log.e(resBody)
     return json({ error = "internal error" }, 500)
