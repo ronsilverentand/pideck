@@ -1,0 +1,8 @@
+# Secrets - only the *.example versions belong in git
+mac/hammerspoon/pideck-secret.lua
+pi/screen/screen.env
+*.env
+!*.env.example
+
+__pycache__/
+.DS_Store

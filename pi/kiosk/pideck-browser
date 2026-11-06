@@ -1,0 +1,23 @@
+#!/bin/sh
+# PiDeck kiosk launcher: runs inside cage (see pideck-kiosk.service).
+# Shows the Companion emulator page full-screen. The URL lives in /etc/pideck/url.
+
+URL="$(cat /etc/pideck/url)"
+
+# Uncomment if the screen is mounted upside down. Rotate here (not in config.txt),
+# so cage maps touch input to the rotated output.
+# wlr-randr --output DSI-1 --transform 180
+
+# Wait until Companion answers, so Chromium never starts on an error page
+until curl -sf --max-time 2 -o /dev/null "$URL"; do sleep 3; done
+
+# Package is 'chromium' on current images, 'chromium-browser' on older Bookworm images
+BROWSER="$(command -v chromium || command -v chromium-browser)"
+
+exec "$BROWSER" \
+  --kiosk --incognito --noerrdialogs --disable-infobars --no-first-run \
+  --ozone-platform=wayland \
+  --disable-pinch --overscroll-history-navigation=0 \
+  --disable-features=Translate \
+  --check-for-update-interval=31536000 \
+  "$URL"

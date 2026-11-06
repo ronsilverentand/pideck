@@ -1,0 +1,73 @@
+# Standalone Bitfocus Companion deployment (plain kubectl apply).
+# On silverswarm/Ingber, Companion is deployed through the Kustodian template
+# templates/06-home/06.14-companion in silverswarm/clusters instead (issue #1182).
+#
+# Pin the image to a release tag instead of "latest".
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: companion
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: companion-config
+  namespace: companion
+spec:
+  accessModes: [ReadWriteOnce]
+  storageClassName: longhorn-retain-single
+  resources:
+    requests:
+      storage: 1Gi
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: companion
+  namespace: companion
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate          # one pod at a time on the RWO volume
+  selector:
+    matchLabels: {app: companion}
+  template:
+    metadata:
+      labels: {app: companion}
+    spec:
+      containers:
+        - name: companion
+          image: ghcr.io/bitfocus/companion/companion:latest   # pin a release tag
+          ports:
+            - {name: http, containerPort: 8000}
+            - {name: satellite, containerPort: 16622}
+          volumeMounts:
+            - {name: config, mountPath: /companion}
+          resources:
+            requests: {cpu: 100m, memory: 256Mi}
+            limits: {memory: 1Gi}
+          readinessProbe:
+            httpGet: {path: /, port: http}
+            initialDelaySeconds: 10
+          livenessProbe:
+            httpGet: {path: /, port: http}
+            initialDelaySeconds: 60
+            periodSeconds: 30
+      volumes:
+        - name: config
+          persistentVolumeClaim:
+            claimName: companion-config
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: companion
+  namespace: companion
+  annotations:
+    metallb.io/loadBalancerIPs: "192.168.10.112"
+spec:
+  type: LoadBalancer
+  selector: {app: companion}
+  ports:
+    - {name: http, port: 8000, targetPort: http}
+    - {name: satellite, port: 16622, targetPort: satellite}

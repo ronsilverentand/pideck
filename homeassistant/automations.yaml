@@ -1,0 +1,50 @@
+# PiDeck screen automations for Home Assistant.
+# Needs pi/screen/pideck-screen running (creates light.pideck_screen via MQTT discovery).
+# Replace binary_sensor.ROOM_OCCUPANCY with the presence/motion sensor in PiDeck's room.
+
+- alias: PiDeck – dim at night
+  triggers:
+    - trigger: time
+      at: "22:30:00"
+  conditions:
+    - condition: state
+      entity_id: light.pideck_screen
+      state: "on"
+  actions:
+    - action: light.turn_on
+      target: {entity_id: light.pideck_screen}
+      data: {brightness_pct: 15}
+
+- alias: PiDeck – full brightness in the morning
+  triggers:
+    - trigger: time
+      at: "07:00:00"
+  conditions:
+    - condition: state
+      entity_id: light.pideck_screen
+      state: "on"
+  actions:
+    - action: light.turn_on
+      target: {entity_id: light.pideck_screen}
+      data: {brightness_pct: 100}
+
+- alias: PiDeck – wake on presence
+  triggers:
+    - trigger: state
+      entity_id: binary_sensor.ROOM_OCCUPANCY
+      to: "on"
+  actions:
+    - action: light.turn_on
+      target: {entity_id: light.pideck_screen}
+      data:
+        brightness_pct: "{{ 15 if now().hour >= 22 or now().hour < 7 else 100 }}"
+
+- alias: PiDeck – off when the room is empty
+  triggers:
+    - trigger: state
+      entity_id: binary_sensor.ROOM_OCCUPANCY
+      to: "off"
+      for: "00:05:00"
+  actions:
+    - action: light.turn_off
+      target: {entity_id: light.pideck_screen}

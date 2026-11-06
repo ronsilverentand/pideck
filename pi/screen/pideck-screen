@@ -1,0 +1,287 @@
+#!/usr/bin/env python3
+"""PiDeck screen daemon.
+
+- Exposes the display backlight to Home Assistant as an MQTT light (on/off + brightness),
+  using MQTT discovery, so it shows up as light.pideck_screen.
+- Wakes the screen on touch. While the screen is off (or idle-dimmed) the touchscreen is
+  grabbed, so the waking tap is not passed on to Chromium and doesn't press a button.
+- Optional local idle dim after N seconds without touch.
+
+Config comes from environment variables (see /etc/pideck/screen.env).
+Runs as root: it writes to /sys/class/backlight and grabs the touch input device.
+"""
+import glob
+import json
+import os
+import signal
+import sys
+import threading
+import time
+
+import evdev
+import paho.mqtt.client as mqtt
+
+ENV = os.environ
+MQTT_HOST = ENV.get("MQTT_HOST", "192.168.10.120")
+MQTT_PORT = int(ENV.get("MQTT_PORT", "1883"))
+MQTT_USER = ENV.get("MQTT_USER")
+MQTT_PASSWORD = ENV.get("MQTT_PASSWORD")
+NODE = ENV.get("PIDECK_ID", "pideck")
+WAKE_ON_TOUCH = ENV.get("WAKE_ON_TOUCH", "1") == "1"
+IDLE_DIM_AFTER = int(ENV.get("IDLE_DIM_AFTER", "0"))   # seconds without touch, 0 = disabled
+IDLE_DIM_LEVEL = int(ENV.get("IDLE_DIM_LEVEL", "25"))  # HA scale 0-255
+
+T_AVAIL = f"{NODE}/status"
+T_CMD = f"{NODE}/screen/set"
+T_STATE = f"{NODE}/screen/state"
+T_DISCOVERY = f"homeassistant/light/{NODE}/screen/config"
+T_HA_STATUS = "homeassistant/status"
+
+
+def log(msg):
+    print(msg, flush=True)
+
+
+# --------------------------------------------------------------------------- backlight
+class Backlight:
+    def __init__(self):
+        paths = sorted(glob.glob("/sys/class/backlight/*"))
+        if not paths:
+            log("No backlight device under /sys/class/backlight - is the display driver working?")
+            sys.exit(1)
+        self.path = paths[0]
+        with open(f"{self.path}/max_brightness") as f:
+            self.max = int(f.read().strip())
+        log(f"Backlight {self.path}, max_brightness={self.max}")
+
+    def read_ha(self):
+        """Current brightness on HA's 0-255 scale."""
+        with open(f"{self.path}/brightness") as f:
+            hw = int(f.read().strip())
+        return round(hw * 255 / self.max) if self.max else 0
+
+    def write_ha(self, value):
+        hw = round(max(0, min(255, value)) * self.max / 255)
+        try:
+            with open(f"{self.path}/brightness", "w") as f:
+                f.write(str(hw))
+        except OSError as e:
+            log(f"Backlight write failed: {e}")
+
+
+# --------------------------------------------------------------------------- state
+class Screen:
+    def __init__(self, backlight):
+        self.bl = backlight
+        self.lock = threading.Lock()
+        self.on = True
+        self.brightness = backlight.read_ha() or 255   # HA scale, remembered while off
+        self.idle_dimmed = False
+        self.last_touch = time.monotonic()
+        self.touch_dev = None
+        self.grabbed = False
+        self.on_change = lambda: None
+
+    def _apply(self):
+        if not self.on:
+            level = 0
+        elif self.idle_dimmed:
+            level = min(self.brightness, IDLE_DIM_LEVEL)
+        else:
+            level = self.brightness
+        self.bl.write_ha(level)
+        self._set_grab((not self.on) or self.idle_dimmed)
+
+    def _set_grab(self, want):
+        dev = self.touch_dev
+        if dev is None or want == self.grabbed:
+            return
+        try:
+            dev.grab() if want else dev.ungrab()
+            self.grabbed = want
+        except OSError as e:
+            log(f"Touch grab/ungrab failed: {e}")
+
+    def command(self, payload):
+        with self.lock:
+            if "brightness" in payload:
+                b = int(payload["brightness"])
+                if b > 0:
+                    self.brightness = b
+            state = payload.get("state")
+            if state == "OFF":
+                self.on = False
+            elif state == "ON":
+                self.on = True
+            self.idle_dimmed = False
+            self.last_touch = time.monotonic()
+            self._apply()
+        self.on_change()
+
+    def touched(self):
+        changed = False
+        with self.lock:
+            self.last_touch = time.monotonic()
+            if not self.on and WAKE_ON_TOUCH:
+                self.on = True
+                changed = True
+            if self.idle_dimmed:
+                self.idle_dimmed = False
+            if changed or self.grabbed:
+                self._apply()
+        if changed:
+            self.on_change()
+
+    def idle_tick(self):
+        if not IDLE_DIM_AFTER:
+            return
+        with self.lock:
+            if self.on and not self.idle_dimmed and time.monotonic() - self.last_touch > IDLE_DIM_AFTER:
+                self.idle_dimmed = True
+                self._apply()
+
+    def attach_touch(self, dev):
+        with self.lock:
+            self.touch_dev = dev
+            self.grabbed = False
+            self._set_grab((not self.on) or self.idle_dimmed)
+
+    def detach_touch(self):
+        with self.lock:
+            self.touch_dev = None
+            self.grabbed = False
+
+    def state_payload(self):
+        with self.lock:
+            return {"state": "ON" if self.on else "OFF",
+                    "brightness": self.brightness,
+                    "color_mode": "brightness"}
+
+    def restore_full_on(self):
+        with self.lock:
+            self.on, self.idle_dimmed = True, False
+            self._set_grab(False)
+            self.bl.write_ha(self.brightness)
+
+
+# --------------------------------------------------------------------------- touch
+def find_touch():
+    for path in evdev.list_devices():
+        try:
+            dev = evdev.InputDevice(path)
+        except OSError:
+            continue
+        name = dev.name.lower()
+        if "ft5x06" in name or "touch" in name:
+            return dev
+        dev.close()
+    return None
+
+
+def touch_loop(screen):
+    warned = False
+    while True:
+        dev = find_touch()
+        if dev is None:
+            if not warned:
+                log("No touchscreen found yet - wake on touch inactive, retrying every 10 s")
+                warned = True
+            time.sleep(10)
+            continue
+        log(f"Touch device: {dev.path} ({dev.name})")
+        warned = False
+        screen.attach_touch(dev)
+        try:
+            for ev in dev.read_loop():
+                if ev.type == evdev.ecodes.EV_KEY and ev.code == evdev.ecodes.BTN_TOUCH and ev.value == 1:
+                    screen.touched()
+        except OSError as e:
+            log(f"Touch device lost: {e}")
+        screen.detach_touch()
+        time.sleep(2)
+
+
+# --------------------------------------------------------------------------- mqtt
+def make_client():
+    try:  # paho-mqtt 2.x
+        return mqtt.Client(mqtt.CallbackAPIVersion.VERSION2, client_id=f"{NODE}-screen")
+    except AttributeError:  # paho-mqtt 1.x
+        return mqtt.Client(client_id=f"{NODE}-screen")
+
+
+def discovery_payload():
+    return {
+        "name": "Screen",
+        "unique_id": f"{NODE}_screen",
+        "object_id": f"{NODE}_screen",
+        "schema": "json",
+        "command_topic": T_CMD,
+        "state_topic": T_STATE,
+        "availability_topic": T_AVAIL,
+        "supported_color_modes": ["brightness"],
+        "brightness_scale": 255,
+        "device": {
+            "identifiers": [NODE],
+            "name": "PiDeck",
+            "model": "Raspberry Pi 3B+ with 7in Touch Display",
+            "manufacturer": "Ingbersoft",
+        },
+    }
+
+
+def main():
+    screen = Screen(Backlight())
+    client = make_client()
+    if MQTT_USER:
+        client.username_pw_set(MQTT_USER, MQTT_PASSWORD)
+    client.will_set(T_AVAIL, "offline", retain=True)
+
+    def publish_state():
+        client.publish(T_STATE, json.dumps(screen.state_payload()), retain=True)
+
+    def publish_all():
+        client.publish(T_DISCOVERY, json.dumps(discovery_payload()), retain=True)
+        client.publish(T_AVAIL, "online", retain=True)
+        publish_state()
+
+    def on_connect(c, userdata, flags, *args):
+        log(f"MQTT connected to {MQTT_HOST}:{MQTT_PORT}")
+        c.subscribe([(T_CMD, 0), (T_HA_STATUS, 0)])
+        publish_all()
+
+    def on_message(c, userdata, msg):
+        if msg.topic == T_HA_STATUS:
+            if msg.payload == b"online":  # HA restarted: re-announce
+                publish_all()
+            return
+        try:
+            screen.command(json.loads(msg.payload or b"{}"))
+        except (ValueError, TypeError) as e:
+            log(f"Bad command {msg.payload!r}: {e}")
+
+    screen.on_change = publish_state
+    client.on_connect = on_connect
+    client.on_message = on_message
+    client.reconnect_delay_set(min_delay=1, max_delay=30)
+    client.connect_async(MQTT_HOST, MQTT_PORT, keepalive=60)
+    client.loop_start()
+
+    threading.Thread(target=touch_loop, args=(screen,), daemon=True).start()
+
+    def shutdown(*_):
+        screen.restore_full_on()  # never leave the screen dark when the service stops
+        client.publish(T_AVAIL, "offline", retain=True)
+        time.sleep(0.5)
+        client.loop_stop()
+        sys.exit(0)
+
+    signal.signal(signal.SIGTERM, shutdown)
+    signal.signal(signal.SIGINT, shutdown)
+
+    while True:
+        screen.idle_tick()
+        time.sleep(1)
+
+
+if __name__ == "__main__":
+    main()

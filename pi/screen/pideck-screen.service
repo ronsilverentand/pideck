@@ -1,0 +1,13 @@
+[Unit]
+Description=PiDeck screen control (Home Assistant via MQTT, wake on touch)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+EnvironmentFile=/etc/pideck/screen.env
+ExecStart=/usr/bin/python3 /usr/local/bin/pideck-screen
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target
