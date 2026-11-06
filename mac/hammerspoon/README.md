@@ -39,7 +39,8 @@ Every route accepts GET or POST and returns JSON.
 | `/window/left` · `right` · `top` · `bottom` · `max` · `center` | Move the focused window |
 | `/window/top-left` (and the other quarters) · `left-third` · `center-third` · `right-third` | Quarters and thirds |
 | `POST /window/set` + JSON body | Exact position and size, see below |
-| `/window/frame/0/0/1200/800` | Same in the URL: x, y, width, height in points |
+| `/window/frame/0/0/1200/800` · `/window/frame/0/0/1200/800/DELL` | Same in the URL: x, y, width, height in points, optional screen at the end |
+| `/screens` | Lists the displays with their number (left to right), name and usable size |
 | `/window/next-screen` · `/window/fullscreen` | Move to the next display, toggle full screen |
 | `/media/play` · `/media/next` · `/media/previous` | Media keys |
 | `/darkmode` · `/lock` · `/displaysleep` | Toggle dark mode, lock screen, display off |

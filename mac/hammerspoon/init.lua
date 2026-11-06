@@ -185,10 +185,12 @@ local function windowAction(arg, rest, body)
     win:moveToUnit(layouts[arg])
   elseif arg == "center" then
     win:centerOnScreen()
-  elseif arg == "frame" then -- /window/frame/<x>/<y>/<w>/<h> in points, relative to the usable area
-    local x, y, w, h = rest:match("^(%-?%d+)/(%-?%d+)/(%d+)/(%d+)$")
-    if not x then return json({ error = "use /window/frame/x/y/w/h" }, 400) end
-    return placeWindow(win, { x = x, y = y, w = w, h = h })
+  elseif arg == "frame" then
+    -- /window/frame/<x>/<y>/<w>/<h>[/<screen>] in points, relative to the screen's usable area.
+    -- Without <screen> the window stays on the screen it is on.
+    local x, y, w, h, scr = rest:match("^(%-?%d+)/(%-?%d+)/(%d+)/(%d+)/?(.*)$")
+    if not x then return json({ error = "use /window/frame/x/y/w/h[/screen]" }, 400) end
+    return placeWindow(win, { x = x, y = y, w = w, h = h, screen = scr })
   elseif arg == "next-screen" then
     win:moveToScreen(win:screen():next())
   elseif arg == "fullscreen" then
@@ -209,6 +211,15 @@ local function handle(path, body)
 
   if a == "status" or a == "" then
     return json(state())
+
+  elseif a == "screens" then -- numbering used by "screen": 1, 2, ... (left to right)
+    local list = {}
+    for i, s in ipairs(screensLeftToRight()) do
+      local f = s:frame()
+      list[#list + 1] = { index = i, name = s:name(), main = s:id() == hs.screen.mainScreen():id(),
+                          usable = { w = f.w, h = f.h } }
+    end
+    return json(list)
 
   elseif a == "volume" then
     if not dev then return json({ error = "no output device" }, 500) end
