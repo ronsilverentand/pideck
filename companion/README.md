@@ -50,6 +50,19 @@ If your Companion version doesn't substitute variables in that field (you'll get
 | 2/3 | your tool's name | `/app/Your%20Tool` | highlight when `mac_app` = your tool |
 | 2/4 | `Lock` | `/lock` | |
 
+## App launcher buttons with real icons
+
+1. Export the icons of every Dock app (pinned and running) on the Mac:
+   ```bash
+   curl -s -X POST -H "Authorization: Bearer $TOKEN" http://localhost:8765/icons/export
+   ```
+   Or in the Hammerspoon Console: `pideckExportDockIcons(144)`. The PNGs land in `~/Desktop/PiDeck icons`, named after the app. An app that isn't in the Dock yet: open it once, then export again.
+2. In Companion, per button: **Button style → PNG → upload** the app's PNG, with alignment centre. Leave the text empty, or put a short label at the bottom.
+3. Action: HTTP POST `/app/<App%20Name>` (spaces as `%20`). `GET /icons` lists the exact names.
+4. Optional feedback: highlight the button when `mac_app` equals the app's name, so you can see which app is in front.
+
+If icons look blurry on the 160 px buttons, export at a larger size (`/icons/export/256`). If they're too big for the button, export at 72.
+
 On every Mac button, add the feedback *Internal → Check variable value* (`mac_online` = 0) with a dark grey background, so the page visibly goes dead when the MacBook is asleep or away.
 
 Back up the configuration regularly with Companion's **Import/Export**.

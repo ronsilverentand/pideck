@@ -44,6 +44,8 @@ Every route accepts GET or POST and returns JSON.
 | `/window/next-screen` · `/window/fullscreen` | Move to the next display, toggle full screen |
 | `/media/play` · `/media/next` · `/media/previous` | Media keys |
 | `/darkmode` · `/lock` · `/displaysleep` | Toggle dark mode, lock screen, display off |
+| `/icons` | Lists the Dock apps (pinned + running), by the name `/app/<name>` expects |
+| `/icons/export` · `/icons/export/72` | Saves every Dock app's icon as a PNG (default 144 px) to `~/Desktop/PiDeck icons` and opens the folder |
 | `/shortcut/Name%20of%20Shortcut` | Run a macOS Shortcuts shortcut |
 
 ### Move and resize a window: `POST /window/set`

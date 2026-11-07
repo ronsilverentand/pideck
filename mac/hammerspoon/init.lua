@@ -201,6 +201,53 @@ local function windowAction(arg, rest, body)
   return json({ ok = true })
 end
 
+---------------------------------------------------------------------------
+-- Dock app icons -> PNG files, for Companion button images
+---------------------------------------------------------------------------
+local function fileUrlToPath(url)
+  local p = url:gsub("^file://", ""):gsub("/$", "")
+  return (p:gsub("%%(%x%x)", function(h) return string.char(tonumber(h, 16)) end))
+end
+
+-- Apps pinned in the Dock plus apps currently running with a Dock icon
+local function dockApps()
+  local apps, seen = {}, {}
+  local function add(name, path)
+    if path and path ~= "" and not seen[path] then
+      seen[path] = true
+      apps[#apps + 1] = { name = name or path:match("([^/]+)%.app$") or path, path = path }
+    end
+  end
+  local plist = hs.plist.read(os.getenv("HOME") .. "/Library/Preferences/com.apple.dock.plist") or {}
+  for _, tile in ipairs(plist["persistent-apps"] or {}) do
+    local td = tile["tile-data"] or {}
+    local url = td["file-data"] and td["file-data"]["_CFURLString"]
+    if url then add(td["file-label"], fileUrlToPath(url)) end
+  end
+  for _, app in ipairs(hs.application.runningApplications()) do
+    if app:kind() == 1 then add(app:name(), app:path()) end -- 1 = regular app with a Dock icon
+  end
+  return apps
+end
+
+-- Saves every Dock app's icon as "<App name>.png" (size x size pixels).
+-- Also callable from the Hammerspoon Console: pideckExportDockIcons(144)
+function pideckExportDockIcons(size, dir)
+  size = tonumber(size) or 144
+  dir = dir or (os.getenv("HOME") .. "/Desktop/PiDeck icons")
+  hs.fs.mkdir(dir)
+  local saved = {}
+  for _, a in ipairs(dockApps()) do
+    local img = hs.image.iconForFile(a.path)
+    if img then
+      local file = dir .. "/" .. (a.name:gsub("[/:]", "-")) .. ".png"
+      if img:setSize({ w = size, h = size }):saveToFile(file) then saved[#saved + 1] = a.name end
+    end
+  end
+  log.i("Exported " .. #saved .. " icons to " .. dir)
+  return dir, saved
+end
+
 local function handle(path, body)
   -- split "/a/b/rest..." into a, b, rest
   local a, b, rest = path:match("^/([^/]+)/?([^/]*)/?(.*)$")
@@ -236,6 +283,16 @@ local function handle(path, body)
     elseif b == "down" then hs.brightness.set(clamp(v - 10, 0, 100))
     elseif b == "set" and tonumber(rest) then hs.brightness.set(clamp(tonumber(rest), 0, 100))
     else return json({ error = "use up|down|set/<0-100>" }, 400) end
+
+  elseif a == "icons" then
+    if b == "export" then -- /icons/export[/<size>]: write PNGs and open the folder in Finder
+      local dir, saved = pideckExportDockIcons(tonumber(rest) or 144)
+      hs.task.new("/usr/bin/open", nil, { dir }):start()
+      return json({ ok = true, folder = dir, apps = saved })
+    end
+    local list = {} -- /icons: list Dock apps (the names work with /app/<name>)
+    for _, app in ipairs(dockApps()) do list[#list + 1] = app.name end
+    return json(list)
 
   elseif a == "app" and b ~= "" then -- /app/Visual%20Studio%20Code
     if not hs.application.launchOrFocus(b) then return json({ error = "app not found: " .. b }, 404) end
