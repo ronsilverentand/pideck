@@ -31,9 +31,121 @@ local function mediaKey(key) -- PLAY, NEXT, PREVIOUS, SOUND_UP, ...
 end
 
 ---------------------------------------------------------------------------
+-- Displays
+---------------------------------------------------------------------------
+-- Screens sorted left to right (then top to bottom), so screen 1 is the leftmost display
+local function screensLeftToRight()
+  local list = hs.screen.allScreens()
+  table.sort(list, function(s1, s2)
+    local f1, f2 = s1:fullFrame(), s2:fullFrame()
+    if f1.x ~= f2.x then return f1.x < f2.x end
+    return f1.y < f2.y
+  end)
+  return list
+end
+
+local function isBuiltin(s) return (s:name() or ""):lower():find("built-in", 1, true) ~= nil end
+
+-- spec: number (1-based, left to right), "main", "builtin", or part of the screen's name
+local function screenBySpec(spec)
+  if spec == "main" then return hs.screen.mainScreen() end
+  local list = screensLeftToRight()
+  local n = tonumber(spec)
+  if n then return list[math.floor(n)] end
+  for _, s in ipairs(list) do
+    if spec == "builtin" and isBuiltin(s) then return s end
+    if (s:name() or ""):lower():find(tostring(spec):lower(), 1, true) then return s end
+  end
+  return nil
+end
+
+-- Brightness: the built-in display via hs.brightness, external displays via DDC with m1ddc
+-- (brew install m1ddc). External values are cached: reading DDC is slow.
+local M1DDC = cfg.m1ddc or "/opt/homebrew/bin/m1ddc"
+local haveDdc = hs.fs.attributes(M1DDC) ~= nil
+local ddcList = nil        -- parsed `m1ddc display list`, reset when displays change
+local extBrightness = {}   -- screen UUID -> last known 0-100 (false = not controllable)
+
+local function ddcDisplays()
+  if ddcList then return ddcList end
+  ddcList = {}
+  if not haveDdc then return ddcList end
+  -- lines look like: [1] DELL U2723QE (F0DB7A7E-6804-4F3B-8687-200C7CBCE0C8)
+  local listing = hs.execute('"' .. M1DDC .. '" display list') or ""
+  for idx, name, uuid in listing:gmatch("%[(%d+)%]%s+([^\n]-)%s+%(([%x%-]+)%)") do
+    ddcList[#ddcList + 1] = { index = idx, name = name, uuid = uuid:upper() }
+  end
+  return ddcList
+end
+
+-- The m1ddc selector (UUID or index) for a screen, matched by UUID first, then by name
+local function ddcTarget(s)
+  local uuid = (s:getUUID() or ""):upper()
+  local sname = (s:name() or ""):lower()
+  for _, d in ipairs(ddcDisplays()) do
+    if d.uuid == uuid then return d.uuid end
+  end
+  for _, d in ipairs(ddcDisplays()) do
+    local dname = d.name:lower()
+    if dname == sname or sname:find(dname, 1, true) or dname:find(sname, 1, true) then return d.index end
+  end
+  return nil
+end
+
+local function getScreenBrightness(s)
+  if isBuiltin(s) then return hs.brightness.get() end
+  local key = s:getUUID()
+  if extBrightness[key] == nil then
+    local t = ddcTarget(s)
+    local value = false
+    if t then
+      local res = hs.execute('"' .. M1DDC .. '" display ' .. t .. " get luminance") or ""
+      value = tonumber(res:match("(%d+)")) or false
+    end
+    extBrightness[key] = value
+  end
+  return extBrightness[key] or nil
+end
+
+local function setScreenBrightness(s, v)
+  v = math.floor(clamp(v, 0, 100) + 0.5)
+  if isBuiltin(s) then
+    hs.brightness.set(v)
+    return true
+  end
+  local t = ddcTarget(s)
+  if not t then return false end
+  extBrightness[s:getUUID()] = v
+  hs.task.new(M1DDC, nil, { "display", tostring(t), "set", "luminance", tostring(v) }):start()
+  return true
+end
+
+local function screensInfo()
+  local list = {}
+  for i, s in ipairs(screensLeftToRight()) do
+    local f = s:frame()
+    list[#list + 1] = {
+      index = i,
+      name = s:name(),
+      main = s:id() == hs.screen.mainScreen():id(),
+      builtin = isBuiltin(s),
+      brightness = getScreenBrightness(s), -- absent when the display can't be controlled
+      usable = { w = f.w, h = f.h },
+    }
+  end
+  return list
+end
+
+pideckScreenWatcher = hs.screen.watcher.new(function()
+  ddcList, extBrightness = nil, {}
+end)
+pideckScreenWatcher:start()
+
+---------------------------------------------------------------------------
 -- State push to Companion custom variables
 -- Create these in Companion first (Variables -> Custom variables):
---   mac_volume, mac_muted, mac_brightness, mac_app, mac_online
+--   mac_volume, mac_muted, mac_brightness, mac_app, mac_online,
+--   mac_brightness_1, mac_brightness_2, ... (per display, numbered left to right)
 ---------------------------------------------------------------------------
 local lastSent = {}
 
@@ -56,9 +168,10 @@ local function state()
   local front = hs.application.frontmostApplication()
   return {
     volume = dev and math.floor((dev:outputVolume() or 0) + 0.5) or nil,
-    muted = dev and dev:outputMuted() or nil,
-    brightness = hs.brightness.get(),
+    muted = dev and dev:outputMuted(), -- keep false (not muted); nil only without a device
+    brightness = hs.brightness.get(), -- built-in display
     app = front and front:name() or "",
+    screens = screensInfo(),
   }
 end
 
@@ -68,6 +181,9 @@ local function pushAll(force)
   if s.volume then pushVar("mac_volume", s.volume) end
   if s.muted ~= nil then pushVar("mac_muted", s.muted and 1 or 0) end
   if s.brightness then pushVar("mac_brightness", s.brightness) end
+  for _, scr in ipairs(s.screens) do
+    if scr.brightness then pushVar("mac_brightness_" .. scr.index, scr.brightness) end
+  end
   pushVar("mac_app", s.app)
   pushVar("mac_online", 1)
 end
@@ -92,30 +208,11 @@ local layouts = {
 
 hs.window.animationDuration = 0 -- move instantly, no slide animation
 
--- Screens sorted left to right (then top to bottom), so "screen": 1 is the leftmost display
-local function screensLeftToRight()
-  local list = hs.screen.allScreens()
-  table.sort(list, function(s1, s2)
-    local f1, f2 = s1:fullFrame(), s2:fullFrame()
-    if f1.x ~= f2.x then return f1.x < f2.x end
-    return f1.y < f2.y
-  end)
-  return list
-end
-
--- spec: nil (window's current screen), number (1-based, left to right), "main", "next",
--- or part of the screen's name (e.g. "Built-in", "DELL")
+-- spec: nil/"current" (window's current screen), "next", or anything screenBySpec accepts
 local function pickScreen(spec, win)
   if spec == nil or spec == "" or spec == "current" then return win:screen() end
-  if spec == "main" then return hs.screen.mainScreen() end
   if spec == "next" then return win:screen():next() end
-  local list = screensLeftToRight()
-  local n = tonumber(spec)
-  if n then return list[math.floor(n)] end
-  for _, s in ipairs(list) do
-    if (s:name() or ""):lower():find(tostring(spec):lower(), 1, true) then return s end
-  end
-  return nil
+  return screenBySpec(spec)
 end
 
 -- Place a window on a screen. x/y are relative to the screen's usable area
@@ -260,13 +357,7 @@ local function handle(path, body)
     return json(state())
 
   elseif a == "screens" then -- numbering used by "screen": 1, 2, ... (left to right)
-    local list = {}
-    for i, s in ipairs(screensLeftToRight()) do
-      local f = s:frame()
-      list[#list + 1] = { index = i, name = s:name(), main = s:id() == hs.screen.mainScreen():id(),
-                          usable = { w = f.w, h = f.h } }
-    end
-    return json(list)
+    return json(screensInfo())
 
   elseif a == "volume" then
     if not dev then return json({ error = "no output device" }, 500) end
@@ -277,12 +368,42 @@ local function handle(path, body)
     elseif b == "set" and tonumber(rest) then dev:setOutputVolume(clamp(tonumber(rest), 0, 100))
     else return json({ error = "use up|down|mute|set/<0-100>" }, 400) end
 
-  elseif a == "brightness" then -- built-in display only
-    local v = hs.brightness.get() or 50
-    if b == "up" then hs.brightness.set(clamp(v + 10, 0, 100))
-    elseif b == "down" then hs.brightness.set(clamp(v - 10, 0, 100))
-    elseif b == "set" and tonumber(rest) then hs.brightness.set(clamp(tonumber(rest), 0, 100))
-    else return json({ error = "use up|down|set/<0-100>" }, 400) end
+  elseif a == "brightness" then
+    -- /brightness/up[/<screen>] · /brightness/down[/<screen>] · /brightness/set/<0-100>[/<screen>]
+    -- No screen = every display. <screen> as in screenBySpec: 1, 2, "builtin", "main", part of a name
+    local value, scr
+    if b == "set" then
+      value, scr = rest:match("^(%d+)/?(.*)$")
+      if not value then return json({ error = "use /brightness/set/<0-100>[/<screen>]" }, 400) end
+    elseif b == "up" or b == "down" then
+      scr = rest
+    else
+      return json({ error = "use up|down|set/<0-100>, optionally followed by /<screen>" }, 400)
+    end
+    local targets
+    if scr == nil or scr == "" or scr == "all" then
+      targets = screensLeftToRight()
+    else
+      local s = screenBySpec(scr)
+      if not s then return json({ error = "screen not found: " .. scr }, 404) end
+      targets = { s }
+    end
+    local results = {}
+    for _, s in ipairs(targets) do
+      local cur = getScreenBrightness(s)
+      local v
+      if b == "set" then v = tonumber(value)
+      elseif cur then v = cur + (b == "up" and 10 or -10) end
+      local ok = v ~= nil and setScreenBrightness(s, v)
+      results[#results + 1] = {
+        name = s:name(),
+        ok = ok,
+        brightness = ok and math.floor(clamp(v, 0, 100) + 0.5) or nil,
+        error = (not ok) and "no brightness control for this display (external displays need m1ddc)" or nil,
+      }
+    end
+    hs.timer.doAfter(0.3, function() pushAll(false) end)
+    return json({ ok = true, displays = results })
 
   elseif a == "icons" then
     if b == "export" then -- /icons/export[/<size>]: write PNGs and open the folder in Finder

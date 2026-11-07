@@ -32,15 +32,16 @@ Every route accepts GET or POST and returns JSON.
 
 | Route | Does |
 | --- | --- |
-| `/status` | Current volume, mute, brightness, frontmost app |
+| `/status` | Volume, mute, built-in brightness, frontmost app, and `screens`: every display with its number, name, brightness and usable size |
 | `/volume/up` · `/volume/down` · `/volume/mute` · `/volume/set/30` | Output volume (steps of 6.25 = one macOS step) |
-| `/brightness/up` · `/brightness/down` · `/brightness/set/60` | Built-in display brightness |
+| `/brightness/up` · `/brightness/down` · `/brightness/set/60` | Brightness of **all** displays (up/down in steps of 10, each from its own level) |
+| `/brightness/up/DELL` · `/brightness/set/60/2` · `/brightness/down/builtin` | Brightness of one display: number (left to right), `builtin`, `main` or part of its name |
 | `/app/Visual%20Studio%20Code` · `/quit/Slack` | Launch or focus an app, or quit it |
 | `/window/left` · `right` · `top` · `bottom` · `max` · `center` | Move the focused window |
 | `/window/top-left` (and the other quarters) · `left-third` · `center-third` · `right-third` | Quarters and thirds |
 | `POST /window/set` + JSON body | Exact position and size, see below |
 | `/window/frame/0/0/1200/800` · `/window/frame/0/0/1200/800/DELL` | Same in the URL: x, y, width, height in points, optional screen at the end |
-| `/screens` | Lists the displays with their number (left to right), name and usable size |
+| `/screens` | Just the `screens` part of `/status` |
 | `/window/next-screen` · `/window/fullscreen` | Move to the next display, toggle full screen |
 | `/media/play` · `/media/next` · `/media/previous` | Media keys |
 | `/darkmode` · `/lock` · `/displaysleep` | Toggle dark mode, lock screen, display off |
@@ -72,8 +73,22 @@ The response returns the frame the window actually got (apps can enforce a minim
 
 In Companion, the body field can use variables, so the sizing lives in Companion: `{"x": $(custom:win_x), "y": $(custom:win_y), "w": $(custom:win_w), "h": $(custom:win_h)}`.
 
-Brightness only controls the built-in display. External monitors would need BetterDisplay or Lunar as an extra route.
+### Brightness of external monitors
+
+The built-in display works out of the box. External monitors are controlled over DDC with [m1ddc](https://github.com/waydabber/m1ddc):
+
+```bash
+brew install m1ddc
+m1ddc display list      # your monitor should be listed
+m1ddc display 1 set luminance 50
+```
+
+- Enable DDC/CI in the monitor's own on-screen menu if nothing happens.
+- USB-C/DisplayPort is the safest connection. DDC over the Mac's own HDMI port doesn't work on every Mac.
+- Hammerspoon matches each display to m1ddc by UUID, then by name. A different install path goes in `pideck-secret.lua` as `m1ddc = "/path/to/m1ddc"`.
+- Reading a monitor's brightness over DDC is slow, so it's read once and then remembered. If you change it with the monitor's own buttons, `/status` shows the old value until the displays change or Hammerspoon reloads.
+- A display without control (no DDC, or m1ddc missing) has no `brightness` in `/status`, and brightness calls report `"ok": false` for it.
 
 ## State pushed to Companion
 
-`mac_volume`, `mac_muted`, `mac_brightness`, `mac_app` and `mac_online` are sent on every change, brightness is polled every 5 s, and everything is resent every 60 s. `mac_online` goes to 0 when the Mac sleeps. Create these custom variables in Companion first (see `companion/README.md`).
+`mac_volume`, `mac_muted`, `mac_brightness` (built-in display), `mac_brightness_1`, `mac_brightness_2`, … (per display, numbered left to right), `mac_app` and `mac_online` are sent on every change, brightness is polled every 5 s, and everything is resent every 60 s. `mac_online` goes to 0 when the Mac sleeps. Create these custom variables in Companion first (see `companion/README.md`).

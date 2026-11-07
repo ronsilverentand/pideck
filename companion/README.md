@@ -17,6 +17,7 @@ PiDeck shows a Companion **emulator** surface with ID `pideck`, grid **5 columns
 | `mac_volume` | Hammerspoon | Output volume 0–100 |
 | `mac_muted` | Hammerspoon | 1 when muted |
 | `mac_brightness` | Hammerspoon | Built-in display brightness 0–100 |
+| `mac_brightness_1`, `mac_brightness_2`, … | Hammerspoon | Brightness per display, numbered left to right (see `GET /screens`) |
 | `mac_app` | Hammerspoon | Name of the frontmost app |
 | `mac_online` | Hammerspoon | 0 when the Mac goes to sleep |
 
@@ -39,7 +40,7 @@ If your Companion version doesn't substitute variables in that field (you'll get
 | 0/2 | `Vol\n$(custom:mac_volume)%` | `/volume/mute` | red background when `mac_muted` = 1 |
 | 0/3 | `Vol +` | `/volume/up` | |
 | 0/4 | `Play / Pause` | `/media/play` | |
-| 1/0 | `Bright −` | `/brightness/down` | |
+| 1/0 | `Bright −` | `/brightness/down` (all displays; add `/DELL` or `/2` for one) | |
 | 1/1 | `Bright\n$(custom:mac_brightness)%` | `/brightness/up` | |
 | 1/2 | `Prev` | `/media/previous` | |
 | 1/3 | `Next` | `/media/next` | |
