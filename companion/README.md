@@ -17,7 +17,10 @@ PiDeck shows a Companion **emulator** surface with ID `pideck`, grid **5 columns
 | `mac_volume` | Hammerspoon | Output volume 0–100 |
 | `mac_muted` | Hammerspoon | 1 when muted |
 | `mac_brightness` | Hammerspoon | Built-in display brightness 0–100 |
+| `mac_screen_count` | Hammerspoon | Number of connected displays |
+| `mac_screen_1_name`, `mac_screen_2_name`, … | Hammerspoon | Display name, numbered left to right |
 | `mac_brightness_1`, `mac_brightness_2`, … | Hammerspoon | Brightness per display, numbered left to right (see `GET /screens`) |
+| `mac_screens` | Hammerspoon | All displays as JSON (number, name, built-in, brightness, usable size) |
 | `mac_app` | Hammerspoon | Name of the frontmost app |
 | `mac_online` | Hammerspoon | 0 when the Mac goes to sleep |
 

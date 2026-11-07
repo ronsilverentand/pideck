@@ -91,4 +91,16 @@ m1ddc display 1 set luminance 50
 
 ## State pushed to Companion
 
-`mac_volume`, `mac_muted`, `mac_brightness` (built-in display), `mac_brightness_1`, `mac_brightness_2`, … (per display, numbered left to right), `mac_app` and `mac_online` are sent on every change, brightness is polled every 5 s, and everything is resent every 60 s. `mac_online` goes to 0 when the Mac sleeps. Create these custom variables in Companion first (see `companion/README.md`).
+| Variable | Value |
+| --- | --- |
+| `mac_volume`, `mac_muted` | Output volume 0–100, 1 when muted |
+| `mac_brightness` | Built-in display brightness 0–100 |
+| `mac_app`, `mac_online` | Frontmost app; 0 when the Mac sleeps |
+| `mac_screen_count` | Number of connected displays |
+| `mac_screen_1_name`, `mac_screen_2_name`, … | Display name, numbered left to right |
+| `mac_brightness_1`, `mac_brightness_2`, … | Brightness per display (empty if it can't be controlled) |
+| `mac_screens` | The whole display list as JSON, the same as `/screens` |
+
+Values are sent on every change, brightness is polled every 5 s, and everything is resent every 60 s. When a display is plugged in, unplugged or rearranged, the display variables update within about 2 seconds, and those of a removed display are cleared. Create the custom variables in Companion first (see `companion/README.md`): Companion ignores values for variables that don't exist.
+
+Display numbers follow the left-to-right order, so they shift when you unplug a monitor. For buttons that should always hit the same monitor, use its name in the route (`/brightness/up/DELL`) rather than its number.

@@ -136,11 +136,6 @@ local function screensInfo()
   return list
 end
 
-pideckScreenWatcher = hs.screen.watcher.new(function()
-  ddcList, extBrightness = nil, {}
-end)
-pideckScreenWatcher:start()
-
 ---------------------------------------------------------------------------
 -- State push to Companion custom variables
 -- Create these in Companion first (Variables -> Custom variables):
@@ -148,6 +143,7 @@ pideckScreenWatcher:start()
 --   mac_brightness_1, mac_brightness_2, ... (per display, numbered left to right)
 ---------------------------------------------------------------------------
 local lastSent = {}
+local lastScreenCount = 0
 
 local function pushVar(name, value)
   if not cfg.companion then return end
@@ -181,9 +177,20 @@ local function pushAll(force)
   if s.volume then pushVar("mac_volume", s.volume) end
   if s.muted ~= nil then pushVar("mac_muted", s.muted and 1 or 0) end
   if s.brightness then pushVar("mac_brightness", s.brightness) end
+  -- Displays: count, name and brightness per display (numbered left to right), plus the
+  -- whole list as JSON. Variables of a display that was unplugged are cleared.
+  local n = #s.screens
+  pushVar("mac_screen_count", n)
   for _, scr in ipairs(s.screens) do
-    if scr.brightness then pushVar("mac_brightness_" .. scr.index, scr.brightness) end
+    pushVar("mac_screen_" .. scr.index .. "_name", scr.name or "")
+    pushVar("mac_brightness_" .. scr.index, scr.brightness or "")
   end
+  for i = n + 1, lastScreenCount do
+    pushVar("mac_screen_" .. i .. "_name", "")
+    pushVar("mac_brightness_" .. i, "")
+  end
+  lastScreenCount = n
+  pushVar("mac_screens", hs.json.encode(s.screens))
   pushVar("mac_app", s.app)
   pushVar("mac_online", 1)
 end
@@ -497,6 +504,13 @@ hs.audiodevice.watcher.setCallback(function(event)
 end)
 hs.audiodevice.watcher.start()
 watchOutput()
+
+-- Display plugged in, unplugged or rearranged: forget cached DDC data and push the new layout
+pideckScreenWatcher = hs.screen.watcher.new(function()
+  ddcList, extBrightness = nil, {}
+  hs.timer.doAfter(2, function() pushAll(false) end) -- give macOS a moment to settle
+end)
+pideckScreenWatcher:start()
 
 pideckAppWatcher = hs.application.watcher.new(function(_, event)
   if event == hs.application.watcher.activated then pushAll(false) end
